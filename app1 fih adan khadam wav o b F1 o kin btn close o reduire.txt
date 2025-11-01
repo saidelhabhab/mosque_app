@@ -1,0 +1,210 @@
+import tkinter as tk
+from tkinter import font
+from PIL import Image, ImageTk
+import datetime, csv, os, threading, time, sys
+from playsound import playsound  # pip install playsound==1.2.2
+
+# --------------------------
+# CONFIGURATION
+CSV_FILE = "meknes_prayer_times_2025.csv"
+BACKGROUND_FILE = "background.jpg"
+ADHAN_FILE = "adhan.wav"
+CITY = "Meknes"
+COUNTRY = "Morocco"
+REFRESH_INTERVAL_MS = 1000
+
+# Buttons images
+CLOSE_IMG = "close.png"
+MINIMIZE_IMG = "minimize.png"
+
+# Arabic labels
+DISPLAY_NAMES = {
+    "Fajr": "الفجر",
+    "Dhuhr": "الظهر",
+    "Asr": "العصر",
+    "Maghrib": "المغرب",
+    "Isha": "العشاء"
+}
+
+MOSQUE_NAME = "مسجد ريان"
+PLACE_NAME = "مدينة مكناس - المغرب"
+
+# --------------------------
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+def clean_time(t):
+    import re
+    if not t: return ""
+    m = re.search(r"(\d{1,2}:\d{2})", t)
+    return m.group(1) if m else t[:5]
+
+def load_csv(file_path=CSV_FILE):
+    data = {}
+    place = PLACE_NAME
+    if not os.path.exists(file_path):
+        return data, place
+    with open(file_path,newline="",encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            date = row.get("تاريخ") or row.get("date")
+            if date:
+                data[date] = {
+                    "Fajr": row.get("الفجر",""),
+                    "Dhuhr": row.get("الظهر",""),
+                    "Asr": row.get("العصر",""),
+                    "Maghrib": row.get("المغرب",""),
+                    "Isha": row.get("العشاء","")
+                }
+            if "place" in row and row["place"]:
+                place = row["place"]
+    return data, place
+
+# --------------------------
+class MosqueApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title(MOSQUE_NAME)
+        self.root.attributes("-fullscreen", True)
+        self.root.bind("<Escape>", lambda e: self.toggle_fullscreen())
+
+        # Bind F1 key for test Adhan
+        self.root.bind("<F1>", lambda e: self.play_adhan())
+
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+
+        # Background
+        bg_file = resource_path(BACKGROUND_FILE)
+        if os.path.exists(bg_file):
+            bg_img = Image.open(bg_file)
+            self.bg_photo = ImageTk.PhotoImage(bg_img.resize((screen_w, screen_h)))
+            self.bg_label = tk.Label(root,image=self.bg_photo)
+            self.bg_label.place(x=0,y=0,relwidth=1,relheight=1)
+        else:
+            self.bg_label = tk.Label(root,bg="black")
+            self.bg_label.place(x=0,y=0,relwidth=1,relheight=1)
+
+        # Fonts
+        self.big_font = font.Font(family="Arial",size=72,weight="bold")
+        self.medium_font = font.Font(family="Arial",size=40)
+        self.small_font = font.Font(family="Arial",size=28)
+
+        # Top buttons
+        btn_frame = tk.Frame(root, bg=None)
+        btn_frame.place(relx=1.0, x=-10, y=10, anchor="ne")
+
+        close_img = Image.open(resource_path(CLOSE_IMG))
+        self.close_photo = ImageTk.PhotoImage(close_img.resize((40,40)))
+        tk.Button(btn_frame,image=self.close_photo, command=root.destroy, bd=0, bg=None, activebackground=None).pack(side="right", padx=5)
+
+        minimize_img = Image.open(resource_path(MINIMIZE_IMG))
+        self.min_photo = ImageTk.PhotoImage(minimize_img.resize((40,40)))
+        tk.Button(btn_frame,image=self.min_photo, command=lambda: root.iconify(), bd=0, bg=None, activebackground=None).pack(side="right", padx=5)
+
+        # Mosque & place labels
+        self.mosque_label = tk.Label(root,text=MOSQUE_NAME,font=self.medium_font,bg=None,fg="gold")
+        self.mosque_label.pack(anchor="n",pady=(60,0))
+        self.place_label = tk.Label(root,text=PLACE_NAME,font=self.medium_font,bg=None,fg="white")
+        self.place_label.pack(anchor="n",pady=(0,0))
+
+        # Date & Day
+        self.date_label = tk.Label(root,text="",font=self.small_font,bg=None,fg="white")
+        self.date_label.pack(anchor="n",pady=(0,10))
+
+        # Next prayer
+        center = tk.Frame(root,bg=None)
+        center.pack(expand=True)
+        self.next_title = tk.Label(center,text="⏰ الصلاة القادمة:",font=self.medium_font,bg=None,fg="yellow")
+        self.next_title.pack()
+        self.next_name = tk.Label(center,text="",font=self.big_font,bg=None,fg="white")
+        self.next_name.pack()
+        self.countdown = tk.Label(center,text="",font=self.medium_font,bg=None,fg="cyan")
+        self.countdown.pack(pady=(10,0))
+
+        # Schedule
+        schedule_frame = tk.Frame(root,bg=None)
+        schedule_frame.pack(side="bottom",pady=30)
+        tk.Label(schedule_frame,text="🕌 أوقات الصلاة اليوم",font=self.medium_font,bg=None,fg="white").grid(row=0,column=0,columnspan=2,pady=5)
+        self.rows=[]
+        for i,key in enumerate(["Fajr","Dhuhr","Asr","Maghrib","Isha"]):
+            name_lbl = tk.Label(schedule_frame,text=DISPLAY_NAMES[key],font=self.small_font,bg=None,fg="white")
+            time_lbl = tk.Label(schedule_frame,text="--:--",font=self.small_font,bg=None,fg="white")
+            name_lbl.grid(row=i+1,column=0,sticky="w",padx=20)
+            time_lbl.grid(row=i+1,column=1,sticky="e",padx=20)
+            self.rows.append((name_lbl,time_lbl))
+
+        # Load CSV
+        self.data, self.place = load_csv()
+        self.current_date = datetime.date.today()
+        self.last_adhan_played = None
+
+        self.update_display()
+        self.root.after(REFRESH_INTERVAL_MS,self.tick)
+
+    def toggle_fullscreen(self):
+        self.root.attributes("-fullscreen", not self.root.attributes("-fullscreen"))
+
+    def find_next_prayer(self):
+        dstr = self.current_date.strftime("%Y-%m-%d")
+        day = self.data.get(dstr)
+        if not day: return None,None
+        now = datetime.datetime.now()
+        base = datetime.datetime.combine(self.current_date,datetime.time(0,0))
+        for key in ["Fajr","Dhuhr","Asr","Maghrib","Isha"]:
+            t = day.get(key)
+            if not t: continue
+            h,m = map(int,t.split(":"))
+            dt = base + datetime.timedelta(hours=h,minutes=m)
+            if dt > now: return key, dt
+        return None,None
+
+    def play_adhan(self):
+        adhan_file = resource_path(ADHAN_FILE)
+        if os.path.exists(adhan_file):
+            # Thread background, ma kayban 7tta chi message
+            threading.Thread(target=lambda: playsound(adhan_file, block=True), daemon=True).start()
+
+    def update_next_prayer(self):
+        key, dt = self.find_next_prayer()
+        if key and dt:
+            self.next_name.config(text=DISPLAY_NAMES[key])
+            remaining = dt - datetime.datetime.now()
+            total = int(remaining.total_seconds())
+            if total < 0: total = 0
+            h = total//3600
+            m = (total%3600)//60
+            s = total%60
+            self.countdown.config(text=f"باقي: {h:02d}:{m:02d}:{s:02d}")
+
+            if total <= 1 and self.last_adhan_played != key:
+                self.last_adhan_played = key
+                self.play_adhan()
+        else:
+            self.next_name.config(text="--")
+            self.countdown.config(text="")
+
+    def update_display(self):
+        now = datetime.datetime.now()
+        weekday_ar = ["الاثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت","الأحد"]
+        self.date_label.config(text=f"{weekday_ar[now.weekday()]}, {now.day} / {now.month} / {now.year} - {now.strftime('%H:%M:%S')}")
+        dstr = self.current_date.strftime("%Y-%m-%d")
+        day = self.data.get(dstr)
+        if day:
+            for i,key in enumerate(["Fajr","Dhuhr","Asr","Maghrib","Isha"]):
+                self.rows[i][1].config(text=day.get(key,"--:--"))
+        self.update_next_prayer()
+
+    def tick(self):
+        self.update_display()
+        self.root.after(REFRESH_INTERVAL_MS,self.tick)
+
+# --------------------------
+if __name__=="__main__":
+    root = tk.Tk()
+    app = MosqueApp(root)
+    root.mainloop()
